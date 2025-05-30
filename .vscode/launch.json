@@ -1,0 +1,25 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "type": "node",
+      "request": "launch",
+      "name": "数据库存储",
+      "skipFiles": ["<node_internals>/**"],
+      "program": "${workspaceFolder}/main_sql.ts",
+      "outFiles": ["${workspaceFolder}/**/*.js"],
+      "runtimeArgs": ["-r", "ts-node/register"],
+      "preLaunchTask": "nvs use 20"
+    },
+    {
+      "type": "node",
+      "request": "launch",
+      "name": "启动程序",
+      "skipFiles": ["<node_internals>/**"],
+      "program": "${workspaceFolder}/main.ts",
+      "outFiles": ["${workspaceFolder}/**/*.js"],
+      "runtimeArgs": ["-r", "ts-node/register"],
+      "preLaunchTask": "nvs use 20"
+    }
+  ]
+}

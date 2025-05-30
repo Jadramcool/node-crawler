@@ -1,0 +1,13 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "nvs use 20",
+      "type": "shell",
+      "command": "nvs use 20",
+      "presentation": {
+        "reveal": "never"
+      }
+    }
+  ]
+}

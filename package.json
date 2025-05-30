@@ -1,0 +1,46 @@
+{
+  "name": "node爬虫",
+  "version": "1.0.0",
+  "description": "基于Node.js和TypeScript的网页爬虫",
+  "main": "index.js",
+  "scripts": {
+    "start": "ts-node main.ts",
+    "start:sql": "ts-node main_sql.ts",
+    "start:sql:manual": "ts-node main_sql.ts --manual",
+    "start:sql:schedule": "ts-node main_sql.ts --schedule",
+    "export:excel": "ts-node export_db_to_excel.ts",
+    "build": "tsc",
+    "build:sql": "tsc main_sql.ts --outDir dist",
+    "build:export": "tsc export_db_to_excel.ts --outDir dist",
+    "prod:sql:manual": "npm run build:sql && node dist/main_sql.js --manual",
+    "prod:sql:schedule": "npm run build:sql && node dist/main_sql.js --schedule",
+    "prod:export:excel": "npm run build:export && node dist/export_db_to_excel.js",
+    "dev": "nodemon main.ts",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "web-scraping",
+    "nodejs",
+    "typescript",
+    "alova"
+  ],
+  "author": "",
+  "license": "ISC",
+  "packageManager": "pnpm@10.7.0",
+  "dependencies": {
+    "alova": "^3.2.12",
+    "axios": "^1.6.7",
+    "cheerio": "^1.0.0-rc.12",
+    "exceljs": "^4.4.0",
+    "mysql2": "^3.6.5",
+    "node-cron": "^3.0.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.21",
+    "@types/node-cron": "^3.0.11",
+    "nodemon": "^3.0.3",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.8.3"
+  }
+}
+
