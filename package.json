@@ -8,7 +8,7 @@
     "start:sql": "ts-node main_sql.ts --",
     "start:sql:manual": "ts-node main_sql.ts --manual --",
     "start:sql:schedule": "ts-node main_sql.ts --schedule --",
-    "start:sql:schedule:noProxy": "ts-node main_sql.ts --schedule --",
+    "start:sql:schedule:noProxy": "ts-node main_sql.ts --schedule -- --no-proxy",
     "start:sql:help": "ts-node main_sql.ts",
     "export:excel": "ts-node export_db_to_excel.ts --",
     "build": "tsc",
