@@ -82,12 +82,52 @@ ts-node main.ts
 
 ### 2. 数据库爬虫
 
+#### 基本使用
+
 ```bash
 # 手动执行一次
 npm run start:sql:manual
 
 # 启动定时任务（每天晚上6点执行）
 npm run start:sql:schedule
+
+# 显示帮助信息
+npm run start:sql:help
+```
+
+#### 命令行参数支持
+
+现在支持通过命令行参数动态配置爬虫行为：
+
+```bash
+# 禁用代理，爬取1-50页
+npm run start:sql:manual -- --no-proxy --start-page 1 --end-page 50
+
+# 使用自定义代理，爬取1-200页
+npm run start:sql:manual -- --proxy http://127.0.0.1:8080 --end-page 200
+
+# 定时任务模式下使用自定义配置
+npm run start:sql:schedule -- --no-proxy --start-page 10 --end-page 100
+```
+
+#### 可用参数
+
+| 参数                    | 说明         | 默认值                  | 示例                            |
+| ----------------------- | ------------ | ----------------------- | ------------------------------- |
+| `--no-proxy`            | 禁用代理     | 启用代理                | `--no-proxy`                    |
+| `--proxy <url>`         | 设置代理地址 | `http://127.0.0.1:7897` | `--proxy http://127.0.0.1:8080` |
+| `--start-page <number>` | 设置起始页码 | `1`                     | `--start-page 10`               |
+| `--end-page <number>`   | 设置结束页码 | `100`                   | `--end-page 200`                |
+
+#### 直接使用 Node.js
+
+```bash
+# 编译后直接运行
+npm run build:sql
+node dist/main_sql.js --manual --no-proxy --start-page 1 --end-page 50
+
+# 或使用 ts-node 直接运行
+ts-node main_sql.ts --manual --proxy http://127.0.0.1:8080 --end-page 200
 ```
 
 ### 3. 数据导出
@@ -101,12 +141,14 @@ npm run export:excel
 
 ### 爬虫配置
 
+#### 代码配置（默认值）
+
 ```typescript
 const config: ScraperConfig = {
   targetUrl: "https://example.com", // 目标网站
-  proxyUrl: "http://127.0.0.1:7897", // 代理地址（可选）
-  startPage: 1, // 起始页码
-  endPage: 100, // 结束页码
+  proxyUrl: cmdConfig.enableProxy ? cmdConfig.proxyUrl : undefined, // 代理地址（可通过命令行覆盖）
+  startPage: cmdConfig.startPage, // 起始页码（可通过命令行覆盖）
+  endPage: cmdConfig.endPage, // 结束页码（可通过命令行覆盖）
   maxRetries: 3, // 最大重试次数
   retryDelay: 4000, // 重试延迟（毫秒）
   selectors: {
@@ -114,6 +156,33 @@ const config: ScraperConfig = {
   },
 };
 ```
+
+#### 命令行配置（优先级更高）
+
+命令行参数会覆盖代码中的默认配置：
+
+```bash
+# 配置优先级：命令行参数 > 代码默认值
+
+# 示例：禁用代理，自定义页面范围
+ts-node main_sql.ts --manual --no-proxy --start-page 5 --end-page 50
+
+# 示例：使用自定义代理
+ts-node main_sql.ts --schedule --proxy http://192.168.1.100:8080
+```
+
+#### 配置参数说明
+
+| 配置项   | 代码默认值              | 命令行参数              | 说明                 |
+| -------- | ----------------------- | ----------------------- | -------------------- |
+| 代理启用 | `true`                  | `--no-proxy`            | 是否使用代理         |
+| 代理地址 | `http://127.0.0.1:7897` | `--proxy <url>`         | HTTP 代理服务器地址  |
+| 起始页   | `1`                     | `--start-page <number>` | 爬取起始页码         |
+| 结束页   | `100`                   | `--end-page <number>`   | 爬取结束页码         |
+| 最大重试 | `3`                     | 暂不支持                | 请求失败最大重试次数 |
+| 重试延迟 | `4000ms`                | 暂不支持                | 重试间隔时间         |
+
+````
 
 ### 数据库表结构
 
@@ -129,7 +198,7 @@ CREATE TABLE scraped_data (
   html TEXT,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
-```
+````
 
 ## 📊 核心功能
 
@@ -153,20 +222,39 @@ CREATE TABLE scraped_data (
 
 ## 🛠️ 开发脚本
 
+### 基础脚本
+
 ```bash
 # 开发环境
 npm run start              # 运行基础爬虫
-npm run start:sql:manual   # 手动运行数据库爬虫
-npm run start:sql:schedule # 启动定时任务
-npm run export:excel       # 导出数据到Excel
+npm run start:sql          # 数据库爬虫（支持参数传递）
+npm run start:sql:manual   # 手动运行数据库爬虫（支持参数传递）
+npm run start:sql:schedule # 启动定时任务（支持参数传递）
+npm run start:sql:help     # 显示帮助信息
+npm run export:excel       # 导出数据到Excel（支持参数传递）
 npm run dev               # 开发模式（热重载）
 
 # 生产环境
 npm run build             # 编译TypeScript
-npm run prod:sql:manual   # 生产环境手动运行
-npm run prod:sql:schedule # 生产环境定时任务
-npm run prod:export:excel # 生产环境数据导出
+npm run prod:sql:manual   # 生产环境手动运行（支持参数传递）
+npm run prod:sql:schedule # 生产环境定时任务（支持参数传递）
+npm run prod:export:excel # 生产环境数据导出（支持参数传递）
 ```
+
+### 参数传递示例
+
+```bash
+# 开发环境示例
+npm run start:sql:manual -- --no-proxy --start-page 1 --end-page 50
+npm run start:sql:schedule -- --proxy http://127.0.0.1:8080 --end-page 200
+npm run export:excel -- --output-file custom_export.xlsx
+
+# 生产环境示例
+npm run prod:sql:manual -- --no-proxy --start-page 10 --end-page 100
+npm run prod:sql:schedule -- --proxy http://127.0.0.1:8080
+```
+
+> **注意**：使用 npm scripts 传递参数时，需要在脚本名称后添加 `--` 分隔符，然后跟上实际参数。
 
 ## 📝 日志记录
 

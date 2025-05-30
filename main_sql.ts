@@ -3,6 +3,49 @@ import * as cheerio from "cheerio";
 import mysql from "mysql2/promise";
 import * as cron from "node-cron";
 
+// 命令行参数解析
+function parseCommandLineArgs() {
+  const args = process.argv.slice(2);
+  const config = {
+    enableProxy: true,
+    proxyUrl: "http://127.0.0.1:7897",
+    startPage: 1,
+    endPage: 100,
+  };
+
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    switch (arg) {
+      case "--no-proxy":
+        config.enableProxy = false;
+        break;
+      case "--proxy":
+        if (i + 1 < args.length) {
+          config.proxyUrl = args[i + 1];
+          i++; // 跳过下一个参数
+        }
+        break;
+      case "--start-page":
+        if (i + 1 < args.length) {
+          config.startPage = parseInt(args[i + 1]);
+          i++;
+        }
+        break;
+      case "--end-page":
+        if (i + 1 < args.length) {
+          config.endPage = parseInt(args[i + 1]);
+          i++;
+        }
+        break;
+    }
+  }
+
+  return config;
+}
+
+// 获取命令行配置
+const cmdConfig = parseCommandLineArgs();
+
 interface DatabaseConfig {
   host: string;
   port: number;
@@ -44,12 +87,12 @@ interface ExecutionLog {
 
 const config: ScraperConfig = {
   targetUrl: "https://u3c3.u3c3u3c3u3c3.com",
-  proxyUrl: "http://127.0.0.1:7897",
+  proxyUrl: cmdConfig.enableProxy ? cmdConfig.proxyUrl : undefined,
   selectors: {
     rows: "table tbody tr",
   },
-  startPage: 1,
-  endPage: 100,
+  startPage: cmdConfig.startPage,
+  endPage: cmdConfig.endPage,
   maxRetries: 3,
   retryDelay: 4000,
   database: {
@@ -705,6 +748,22 @@ if (process.argv.includes("--schedule")) {
   console.log("使用方法:");
   console.log("  npm run start --manual    # 手动执行一次爬取");
   console.log("  npm run start --schedule  # 启动定时任务（每天晚上6点执行）");
+  console.log("");
+  console.log("可选参数:");
+  console.log("  --no-proxy              # 禁用代理");
+  console.log(
+    "  --proxy <url>           # 设置代理地址 (默认: http://127.0.0.1:7897)"
+  );
+  console.log("  --start-page <number>   # 设置起始页码 (默认: 1)");
+  console.log("  --end-page <number>     # 设置结束页码 (默认: 100)");
+  console.log("");
+  console.log("示例:");
+  console.log(
+    "  node main_sql.js --manual --no-proxy --start-page 1 --end-page 50"
+  );
+  console.log(
+    "  node main_sql.js --schedule --proxy http://127.0.0.1:8080 --end-page 200"
+  );
   console.log("");
   console.log("或者直接使用 node 命令:");
   console.log("  node main_sql.js --manual");
