@@ -1,7 +1,58 @@
 import axios, { AxiosInstance } from "axios";
 import * as cheerio from "cheerio";
-import fs from "fs";
-import ExcelJS from "exceljs";
+import mysql from "mysql2/promise";
+import * as cron from "node-cron";
+
+// 命令行参数解析
+function parseCommandLineArgs() {
+  const args = process.argv.slice(2);
+  const config = {
+    enableProxy: true,
+    proxyUrl: "http://127.0.0.1:7897",
+    startPage: 1,
+    endPage: 100,
+  };
+
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    switch (arg) {
+      case "--no-proxy":
+        config.enableProxy = false;
+        break;
+      case "--proxy":
+        if (i + 1 < args.length) {
+          config.proxyUrl = args[i + 1];
+          i++; // 跳过下一个参数
+        }
+        break;
+      case "--start-page":
+        if (i + 1 < args.length) {
+          config.startPage = parseInt(args[i + 1]);
+          i++;
+        }
+        break;
+      case "--end-page":
+        if (i + 1 < args.length) {
+          config.endPage = parseInt(args[i + 1]);
+          i++;
+        }
+        break;
+    }
+  }
+
+  return config;
+}
+
+// 获取命令行配置
+const cmdConfig = parseCommandLineArgs();
+
+interface DatabaseConfig {
+  host: string;
+  port: number;
+  user: string;
+  password: string;
+  database: string;
+}
 
 interface ScraperConfig {
   targetUrl: string;
@@ -13,23 +64,48 @@ interface ScraperConfig {
   endPage: number;
   maxRetries?: number;
   retryDelay?: number;
+  database: DatabaseConfig;
 }
 
 interface ScrapeResults {
   [key: string]: any; // 修改类型以支持更复杂的数据结构
 }
 
+interface ExecutionLog {
+  id?: number;
+  start_time: Date;
+  end_time?: Date;
+  duration_ms?: number;
+  total_pages: number;
+  total_items: number;
+  new_items: number;
+  duplicate_items: number;
+  status: "running" | "completed" | "failed";
+  error_message?: string;
+  created_at?: Date;
+}
+
 const config: ScraperConfig = {
-  targetUrl: "https://u3c3.u3c3u3c3u3c3.com/",
-  proxyUrl: "http://127.0.0.1:7897",
+  targetUrl: "https://u3c3.u3c3u3c3u3c3.com",
+  proxyUrl: cmdConfig.enableProxy ? cmdConfig.proxyUrl : undefined,
   selectors: {
     rows: "table tbody tr",
   },
-  startPage: 1,
-  endPage: 10,
+  startPage: cmdConfig.startPage,
+  endPage: cmdConfig.endPage,
   maxRetries: 3,
   retryDelay: 4000,
+  database: {
+    host: "localhost",
+    port: 3306,
+    user: "root",
+    password: "123456",
+    database: "scraper_db",
+  },
 };
+
+// 数据库连接池
+let pool: mysql.Pool;
 
 class WebScraper {
   private axiosInstance: AxiosInstance;
@@ -38,7 +114,7 @@ class WebScraper {
   constructor(config: ScraperConfig) {
     this.config = {
       maxRetries: 3,
-      retryDelay: 1000,
+      retryDelay: 3000,
       ...config,
     };
 
@@ -81,7 +157,7 @@ class WebScraper {
             retryCount + 1
           }次重试...`
         );
-        await this.delay(this.config.retryDelay || 1000);
+        await this.delay(this.config.retryDelay || 3000);
         return this.retryOperation(operation, retryCount + 1);
       }
       throw error;
@@ -98,30 +174,119 @@ class WebScraper {
     const results: ScrapeResults = {
       pages: [],
       totalItems: 0,
+      totalInserted: 0,
+      totalDuplicate: 0,
     };
 
-    for (
-      let page = this.config.startPage;
-      page <= this.config.endPage;
-      page++
-    ) {
+    // 记录需要回头爬取的页码
+    const skippedPages: number[] = [];
+    // 记录当前是否处于回头爬取模式
+    let isBacktracking = false;
+    // 记录上一次跳页的起始页码，避免重复跳页
+    let lastSkipStartPage = -1;
+
+    let page = this.config.startPage;
+    while (page <= this.config.endPage) {
       try {
+        console.log(
+          `开始爬取第 ${page} 页${isBacktracking ? " (回头爬取模式)" : ""}...`
+        );
         const pageResult = await this.scrapePage(page);
         results.pages.push(pageResult);
         results.totalItems += pageResult.items.length;
 
+        // 分析页面内重复数据的分布情况
+        const pageAnalysis = await analyzePageDuplicates(pageResult);
+
+        // 立即保存当前页数据到数据库
+        console.log(`正在保存第 ${page} 页数据到数据库...`);
+        const saveResult = await savePageToDatabase(pageResult);
+        results.totalInserted =
+          (results.totalInserted || 0) + saveResult.insertedCount;
+        results.totalDuplicate =
+          (results.totalDuplicate || 0) + saveResult.duplicateCount;
+
+        // 根据页面内重复分布决定是否跳页
+        if (saveResult.duplicateCount > 0 && !isBacktracking) {
+          if (pageAnalysis.pattern === "start_duplicate_then_new") {
+            // 开始重复但中间不重复，继续正常爬取
+            console.log(
+              `第 ${page} 页：开始部分重复但中间有新数据，继续正常爬取`
+            );
+            page++;
+          } else {
+            // 检查是否刚刚跳过来的页面，避免重复跳页
+            if (lastSkipStartPage !== -1 && page <= lastSkipStartPage + 9) {
+              console.log(
+                `第 ${page} 页：检测到重复数据，但这是刚跳过来的页面，继续正常爬取避免重复跳页`
+              );
+              page++;
+            } else {
+              // 清空skippedPages
+              skippedPages.length = 0;
+              // 其他所有情况（包括全部重复、开始不重复但中间重复等），都跳页
+              const pagesToSkip = [];
+              for (let i = 1; i <= 9; i++) {
+                const skipPage = page + i;
+                if (skipPage < this.config.endPage) {
+                  pagesToSkip.push(skipPage);
+                  skippedPages.push(skipPage);
+                }
+              }
+
+              if (pagesToSkip.length > 0) {
+                console.log(
+                  `第 ${page} 页：检测到重复数据模式 "${
+                    pageAnalysis.pattern
+                  }"，跳过接下来的 ${pagesToSkip.length} 页: ${pagesToSkip.join(
+                    ", "
+                  )}`
+                );
+                page += pagesToSkip.length + 1; // 页码跳转到跳过页面之后
+              } else {
+                page++; // 如果已经接近结束页，则正常递增
+              }
+            }
+          }
+        } else {
+          // 如果没有重复数据，且之前有跳过的页面，则进入回头爬取模式
+          if (!isBacktracking && skippedPages.length > 0) {
+            console.log(
+              `第 ${page} 页：无重复数据，开始回头爬取之前跳过的页面`
+            );
+            lastSkipStartPage = page; // 记录本次跳页的起始页码
+            isBacktracking = true;
+            page = skippedPages.shift() || this.config.endPage + 1; // 取出第一个跳过的页码
+          } else {
+            // 正常递增或回头爬取模式下的递增
+            if (isBacktracking && skippedPages.length > 0) {
+              page = skippedPages.shift() || this.config.endPage + 1; // 取出下一个跳过的页码
+            } else {
+              isBacktracking = false; // 回头爬取完成，恢复正常模式
+              page++; // 正常递增
+            }
+          }
+        }
+
         // 避免爬取过快
-        if (page < this.config.endPage) {
-          console.log(`等待 ${this.config.retryDelay}ms 后继续爬取下一页...`);
-          await this.delay(this.config.retryDelay || 1000);
+        if (page <= this.config.endPage) {
+          //   延迟时间在retryDelay正负一秒内
+          const delay =
+            (this.config.retryDelay || 3000) +
+            Math.floor(Math.random() * 2000) -
+            1000;
+          console.log(`等待 ${delay}ms 后继续爬取下一页...`);
+          await this.delay(delay || 1000);
         }
       } catch (error) {
         console.error(`爬取第 ${page} 页失败，继续爬取下一页`, error);
+        page++; // 出错时也递增页码
       }
     }
 
     console.log(
-      `全部爬取完成，共爬取 ${results.pages.length} 页，${results.totalItems} 条数据`
+      `全部爬取完成，共爬取 ${results.pages.length} 页，${results.totalItems} 条数据，` +
+        `新增 ${results.totalInserted} 条，重复 ${results.totalDuplicate} 条`
     );
     return results;
   }
@@ -182,120 +347,425 @@ class WebScraper {
   }
 }
 
-async function saveToExcel(data: ScrapeResults, filename: string) {
-  const workbook = new ExcelJS.Workbook();
-  let worksheet: ExcelJS.Worksheet;
-  let existingData: any = null;
-  // const worksheet = workbook.addWorksheet("Data");
-
-  //  定义表头结构（提取为常量，避免重复代码）
-  const COLUMNS = [
-    { header: "序号", key: "index", width: 8 },
-    { header: "类型", key: "type", width: 10 },
-    { header: "标题", key: "title", width: 30 },
-    { header: "下载链接", key: "torrentHref", width: 40 },
-    { header: "磁力链接", key: "magnetHref", width: 50 },
-    { header: "大小", key: "size", width: 20 },
-    { header: "日期", key: "date", width: 20 },
-  ];
-
-  // 检查文件是否存在
-  const fileExists = fs.existsSync(filename);
-
-  if (fileExists) {
-    // 读取已存在的 Excel 文件
-    await workbook.xlsx.readFile(filename);
-    const oldSheet = workbook.getWorksheet("Data"); // 使用!断言非空
-    if (!oldSheet) throw new Error("工作表不存在");
-    worksheet = oldSheet;
-    // 设置columns（确保数据能正确映射到列）
-    worksheet.columns = COLUMNS;
-    // 获取现有数据（从第二行开始，跳过表头）
-    const lastRowNum = worksheet.lastRow?.number || 1; // 如果没有数据行，lastRowNum 为 1
-    if (lastRowNum < 2) {
-      // 没有数据行（只有表头）
-      existingData = [];
-    } else {
-      // 有数据行，获取从第2行到最后一行的数据
-      const rows = worksheet.getRows(2, 1) || []; // 修正范围
-      existingData = rows[0].getCell(4).value; // 处理 rows 可能为 undefined 的情况
-    }
-  } else {
-    // 创建新工作表并添加表头
-    worksheet = workbook.addWorksheet("Data");
-    worksheet.columns = COLUMNS;
-  }
-
-  // 合并所有页面的项目
-  const allItems = data.pages.flatMap((page: any) => page.items);
-  const newItems: any[] = [];
-  // 是否找到重复项
-  let isDuplicateFound = false;
-
-  for (const item of allItems) {
-    // 跳过重复项检测（当已发现重复后不再检测）
-    if (isDuplicateFound) {
-      console.log(
-        `此次插入${newItems.length}条数据, 共${allItems.length}条数据`
-      );
-      break;
-    }
-
-    // 检查是否与现有数据的第一条（表格最上方）重复
-    const firstExistingItem = existingData;
-    if (firstExistingItem && isItemDuplicate(item, firstExistingItem)) {
-      console.log("检测到重复数据，停止后续数据插入");
-      isDuplicateFound = true;
-      continue; // 跳过当前重复项，但保留之前已确认的非重复项
-    }
-
-    // 记录有效新数据（序号需在插入时动态生成，避免提前生成导致断层）
-    newItems.unshift(item); // 保持插入顺序（倒序处理后正序插入）
-  }
-
-  // 生成连续序号并插入数据
-  let newIndex = 1; // 现有数据条数 + 1（序号从1开始）
-  let insertRow: number = fileExists ? 2 : 2; // 插入位置始终在表头下方（第2行）
-
-  for (const item of newItems) {
-    item.index = newIndex++;
-    console.log("插入的数据:", item);
-    console.log(`在第 ${insertRow} 行插入数据`); // 打印插入位置
-    worksheet.insertRow(insertRow++, item);
-  }
-
-  // 保存 Excel 文件
-  await workbook.xlsx.writeFile(filename);
-  console.log(`爬取结果已保存到 ${filename} 文件中`);
-}
-
-// 数据重复检测函数（根据标题和大小判断，可根据实际需求调整）
-function isItemDuplicate(newItem: any, existingItem: any): boolean {
-  return newItem.torrentHref === existingItem;
-}
-
-// 使用示例
-async function main() {
-  const scraper = new WebScraper(config);
+// 初始化数据库连接和创建表
+async function initDatabase() {
   try {
-    console.log("开始爬取网页内容...");
-    const results = await scraper.scrape();
-    // 将爬取结果保存到文件中
-    await saveToExcel(results, "output11.xlsx");
-    // console.log("爬取结果：");
-    // // 打印爬取结果
-    // console.log(JSON.stringify(results, null, 2));
+    // 创建数据库连接池
+    pool = mysql.createPool({
+      host: config.database.host,
+      port: config.database.port,
+      user: config.database.user,
+      password: config.database.password,
+      database: config.database.database,
+      waitForConnections: true,
+      connectionLimit: 10,
+      queueLimit: 0,
+    });
+
+    // 创建数据库（如果不存在）
+    const connection = await mysql.createConnection({
+      host: config.database.host,
+      port: config.database.port,
+      user: config.database.user,
+      password: config.database.password,
+    });
+
+    await connection.execute(
+      `CREATE DATABASE IF NOT EXISTS ${config.database.database}`
+    );
+    await connection.end();
+
+    // 创建数据表（如果不存在）
+    const createDataTableSQL = `
+      CREATE TABLE IF NOT EXISTS scraped_data (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        type VARCHAR(100),
+        title VARCHAR(500),
+        torrent_href VARCHAR(500) UNIQUE,
+        magnet_href VARCHAR(1000),
+        size VARCHAR(50),
+        date VARCHAR(50),
+        html TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_torrent_href (torrent_href)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    `;
+
+    // 创建执行日志表（如果不存在）
+    const createLogTableSQL = `
+      CREATE TABLE IF NOT EXISTS execution_logs (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        start_time DATETIME NOT NULL,
+        end_time DATETIME,
+        duration_ms INT,
+        total_pages INT DEFAULT 0,
+        total_items INT DEFAULT 0,
+        new_items INT DEFAULT 0,
+        duplicate_items INT DEFAULT 0,
+        status ENUM('running', 'completed', 'failed') DEFAULT 'running',
+        error_message TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_start_time (start_time),
+        INDEX idx_status (status)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    `;
+
+    await pool.execute(createDataTableSQL);
+    await pool.execute(createLogTableSQL);
+    console.log("数据库初始化完成");
   } catch (error) {
-    if (axios.isAxiosError(error)) {
-      console.error("网络请求错误:", {
-        message: error.message,
-        status: error.response?.status,
-        statusText: error.response?.statusText,
-      });
-    } else {
-      console.error("程序执行出错:", error);
-    }
+    console.error("数据库初始化失败:", error);
+    throw error;
   }
 }
 
-main();
+// 分析页面内重复数据的分布模式
+async function analyzePageDuplicates(pageData: any): Promise<{
+  pattern:
+    | "all_new"
+    | "all_duplicate"
+    | "start_duplicate_then_new"
+    | "new_then_duplicate"
+    | "mixed";
+  duplicateIndexes: number[];
+}> {
+  const duplicateIndexes: number[] = [];
+
+  // 检查每个数据项是否重复
+  for (let i = 0; i < pageData.items.length; i++) {
+    const item = pageData.items[i];
+    try {
+      const [rows] = (await pool.execute(
+        "SELECT COUNT(*) as count FROM scraped_data WHERE torrent_href = ?",
+        [item.torrentHref]
+      )) as any;
+
+      if (rows[0].count > 0) {
+        duplicateIndexes.push(i);
+      }
+    } catch (error) {
+      console.error("检查重复数据时出错:", error);
+    }
+  }
+
+  // 分析重复模式
+  const totalItems = pageData.items.length;
+  const duplicateCount = duplicateIndexes.length;
+
+  if (duplicateCount === 0) {
+    return { pattern: "all_new", duplicateIndexes };
+  }
+
+  if (duplicateCount === totalItems) {
+    return { pattern: "all_duplicate", duplicateIndexes };
+  }
+
+  // 检查是否从开始重复然后变新
+  const firstHalfDuplicates = duplicateIndexes.filter(
+    (i) => i < totalItems / 2
+  ).length;
+  const secondHalfDuplicates = duplicateIndexes.filter(
+    (i) => i >= totalItems / 2
+  ).length;
+
+  if (firstHalfDuplicates > 0 && secondHalfDuplicates === 0) {
+    return { pattern: "start_duplicate_then_new", duplicateIndexes };
+  }
+
+  if (firstHalfDuplicates === 0 && secondHalfDuplicates > 0) {
+    return { pattern: "new_then_duplicate", duplicateIndexes };
+  }
+
+  return { pattern: "mixed", duplicateIndexes };
+}
+
+// 保存单页数据到数据库
+async function savePageToDatabase(pageData: any) {
+  try {
+    let insertedCount = 0;
+    let duplicateCount = 0;
+
+    for (const item of pageData.items) {
+      try {
+        // 检查是否已存在相同的下载链接
+        const [existing] = (await pool.execute(
+          "SELECT id FROM scraped_data WHERE torrent_href = ?",
+          [item.torrentHref]
+        )) as any;
+
+        if (existing.length > 0) {
+          //   console.log(`跳过重复数据: ${item.title}`);
+          duplicateCount++;
+          continue;
+        }
+
+        // 插入新数据
+        await pool.execute(
+          `INSERT INTO scraped_data (type, title, torrent_href, magnet_href, size, date, html) 
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          [
+            item.type,
+            item.title,
+            item.torrentHref,
+            item.magnetHref,
+            item.size,
+            item.date,
+            item.html,
+          ]
+        );
+
+        insertedCount++;
+        // console.log(`成功插入数据: ${item.title}`);
+      } catch (error: any) {
+        if (error.code === "ER_DUP_ENTRY") {
+          //   console.log(`跳过重复数据: ${item.title}`);
+          duplicateCount++;
+        } else {
+          console.error(`插入数据失败: ${item.title}`, error);
+        }
+      }
+    }
+
+    console.log(
+      `第 ${pageData.pageNumber} 页数据保存完成: 新增 ${insertedCount} 条，重复 ${duplicateCount} 条`
+    );
+    return { insertedCount, duplicateCount };
+  } catch (error) {
+    console.error(`保存第 ${pageData.pageNumber} 页数据到数据库失败:`, error);
+    throw error;
+  }
+}
+
+// 关闭数据库连接
+async function closeDatabase() {
+  if (pool) {
+    await pool.end();
+    console.log("数据库连接已关闭");
+  }
+}
+
+// 记录执行日志到数据库
+async function logExecution(log: ExecutionLog): Promise<number> {
+  try {
+    const [result] = (await pool.execute(
+      `INSERT INTO execution_logs (start_time, end_time, duration_ms, total_pages, total_items, new_items, duplicate_items, status, error_message)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        log.start_time,
+        log.end_time || null,
+        log.duration_ms || null,
+        log.total_pages,
+        log.total_items,
+        log.new_items,
+        log.duplicate_items,
+        log.status,
+        log.error_message || null,
+      ]
+    )) as any;
+    return result.insertId;
+  } catch (error) {
+    console.error("记录执行日志失败:", error);
+    throw error;
+  }
+}
+
+// 更新执行日志
+async function updateExecutionLog(
+  id: number,
+  updates: Partial<ExecutionLog>
+): Promise<void> {
+  try {
+    const fields = [];
+    const values = [];
+
+    if (updates.end_time !== undefined) {
+      fields.push("end_time = ?");
+      values.push(updates.end_time);
+    }
+    if (updates.duration_ms !== undefined) {
+      fields.push("duration_ms = ?");
+      values.push(updates.duration_ms);
+    }
+    if (updates.total_pages !== undefined) {
+      fields.push("total_pages = ?");
+      values.push(updates.total_pages);
+    }
+    if (updates.total_items !== undefined) {
+      fields.push("total_items = ?");
+      values.push(updates.total_items);
+    }
+    if (updates.new_items !== undefined) {
+      fields.push("new_items = ?");
+      values.push(updates.new_items);
+    }
+    if (updates.duplicate_items !== undefined) {
+      fields.push("duplicate_items = ?");
+      values.push(updates.duplicate_items);
+    }
+    if (updates.status !== undefined) {
+      fields.push("status = ?");
+      values.push(updates.status);
+    }
+    if (updates.error_message !== undefined) {
+      fields.push("error_message = ?");
+      values.push(updates.error_message);
+    }
+
+    if (fields.length > 0) {
+      values.push(id);
+      await pool.execute(
+        `UPDATE execution_logs SET ${fields.join(", ")} WHERE id = ?`,
+        values
+      );
+    }
+  } catch (error) {
+    console.error("更新执行日志失败:", error);
+    throw error;
+  }
+}
+
+// 执行爬取任务并记录日志
+async function executeScrapingTask(): Promise<void> {
+  const startTime = new Date();
+  let logId: number | null = null;
+
+  try {
+    // 初始化数据库
+    await initDatabase();
+
+    // 记录开始执行的日志
+    logId = await logExecution({
+      start_time: startTime,
+      total_pages: 0,
+      total_items: 0,
+      new_items: 0,
+      duplicate_items: 0,
+      status: "running",
+    });
+
+    console.log(
+      `[${startTime.toISOString()}] 开始执行定时爬取任务，日志ID: ${logId}`
+    );
+
+    const scraper = new WebScraper(config);
+    const results = await scraper.scrape();
+
+    const endTime = new Date();
+    const duration = endTime.getTime() - startTime.getTime();
+
+    // 更新执行日志为完成状态
+    await updateExecutionLog(logId, {
+      end_time: endTime,
+      duration_ms: duration,
+      total_pages: results.pages?.length || 0,
+      total_items: results.totalItems || 0,
+      new_items: results.totalInserted || 0,
+      duplicate_items: results.totalDuplicate || 0,
+      status: "completed",
+    });
+
+    console.log(`[${endTime.toISOString()}] 爬取任务完成！`);
+    console.log(
+      `执行时间: ${duration}ms (${(duration / 1000 / 60).toFixed(2)}分钟)`
+    );
+    console.log(`总页数: ${results.pages?.length || 0}`);
+    console.log(`总数据: ${results.totalItems || 0} 条`);
+    console.log(`新增: ${results.totalInserted || 0} 条`);
+    console.log(`重复: ${results.totalDuplicate || 0} 条`);
+  } catch (error) {
+    const endTime = new Date();
+    const duration = endTime.getTime() - startTime.getTime();
+
+    let errorMessage = "未知错误";
+    if (axios.isAxiosError(error)) {
+      errorMessage = `网络请求错误: ${error.message} (状态码: ${error.response?.status})`;
+    } else if (error instanceof Error) {
+      errorMessage = error.message;
+    }
+
+    console.error(`[${endTime.toISOString()}] 爬取任务执行失败:`, errorMessage);
+
+    // 更新执行日志为失败状态
+    if (logId) {
+      try {
+        await updateExecutionLog(logId, {
+          end_time: endTime,
+          duration_ms: duration,
+          status: "failed",
+          error_message: errorMessage,
+        });
+      } catch (logError) {
+        console.error("更新失败日志时出错:", logError);
+      }
+    }
+  } finally {
+    // 关闭数据库连接
+    await closeDatabase();
+  }
+}
+
+// 手动执行模式
+async function main() {
+  console.log("手动执行爬取任务...");
+  await executeScrapingTask();
+}
+
+// 启动定时任务
+function startScheduledTask() {
+  console.log("启动定时爬取任务，每天晚上6点执行...");
+
+  // 每天晚上6点执行 (0 18 * * *)
+  cron.schedule(
+    "0 18 * * *",
+    async () => {
+      console.log("定时任务触发，开始执行爬取...");
+      await executeScrapingTask();
+    },
+    {
+      scheduled: true,
+      timezone: "Asia/Shanghai", // 设置时区为中国时区
+    }
+  );
+
+  console.log("定时任务已启动，程序将保持运行状态...");
+
+  // 保持程序运行
+  process.on("SIGINT", () => {
+    console.log("\n收到退出信号，正在关闭程序...");
+    process.exit(0);
+  });
+}
+
+// 根据命令行参数决定执行模式
+if (process.argv.includes("--schedule")) {
+  // 定时任务模式
+  startScheduledTask();
+} else if (process.argv.includes("--manual")) {
+  // 手动执行模式
+  main();
+} else {
+  // 默认显示帮助信息
+  console.log("使用方法:");
+  console.log("  npm run start --manual    # 手动执行一次爬取");
+  console.log("  npm run start --schedule  # 启动定时任务（每天晚上6点执行）");
+  console.log("");
+  console.log("可选参数:");
+  console.log("  --no-proxy              # 禁用代理");
+  console.log(
+    "  --proxy <url>           # 设置代理地址 (默认: http://127.0.0.1:7897)"
+  );
+  console.log("  --start-page <number>   # 设置起始页码 (默认: 1)");
+  console.log("  --end-page <number>     # 设置结束页码 (默认: 100)");
+  console.log("");
+  console.log("示例:");
+  console.log(
+    "  node main_sql.js --manual --no-proxy --start-page 1 --end-page 50"
+  );
+  console.log(
+    "  node main_sql.js --schedule --proxy http://127.0.0.1:8080 --end-page 200"
+  );
+  console.log("");
+  console.log("或者直接使用 node 命令:");
+  console.log("  node main_sql.js --manual");
+  console.log("  node main_sql.js --schedule");
+}
