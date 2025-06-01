@@ -96,10 +96,10 @@ const config: ScraperConfig = {
   maxRetries: 3,
   retryDelay: 4000,
   database: {
-    host: "localhost",
+    host: "117.72.60.94",
     port: 3306,
     user: "root",
-    password: "123456",
+    password: "JIADAOMING0119",
     database: "scraper_db",
   },
 };
