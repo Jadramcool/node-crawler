@@ -8,6 +8,9 @@
     "start:manual": "ts-node main.ts --manual --",
     "start:schedule": "ts-node main.ts --schedule --",
     "start:schedule:noProxy": "ts-node main.ts --schedule -- --no-proxy",
+    "start:kb": "ts-node main_kb.ts",
+    "start:kb:manual": "ts-node main_kb.ts --manual",
+    "start:kb:schedule": "ts-node main_kb.ts --schedule",
     "export:excel": "ts-node export_db_to_excel.ts --",
     "dev": "nodemon main.ts",
     "test": "echo \"Error: no test specified\" && exit 1"
@@ -20,16 +23,23 @@
   ],
   "author": "",
   "license": "ISC",
-  "packageManager": "pnpm@10.7.0",
+  "packageManager": "pnpm@10.12.1",
   "dependencies": {
     "alova": "^3.2.12",
     "axios": "^1.6.7",
     "cheerio": "^1.0.0-rc.12",
+    "cron": "^4.3.1",
     "exceljs": "^4.4.0",
+    "http-proxy-agent": "^7.0.2",
+    "https-proxy-agent": "^7.0.6",
     "mysql2": "^3.6.5",
-    "node-cron": "^3.0.3"
+    "node-cron": "^3.0.3",
+    "playwright": "^1.52.0",
+    "tough-cookie": "^5.1.2"
   },
   "devDependencies": {
+    "@types/cheerio": "^1.0.0",
+    "@types/cron": "^2.4.3",
     "@types/node": "^22.15.21",
     "@types/node-cron": "^3.0.11",
     "nodemon": "^3.0.3",
