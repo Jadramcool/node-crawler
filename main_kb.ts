@@ -160,7 +160,15 @@ const scrape = async () => {
   try {
     await initDatabase();
 
-    browser = await chromium.launch({ headless: true });
+    browser = await chromium.launch({
+      headless: true,
+      args: [
+        "--disable-web-security",
+        "--disable-features=IsolateOrigins,site-per-process",
+        "--no-sandbox",
+        "--disable-setuid-sandbox",
+      ],
+    });
     const context = await browser.newContext();
     const page = await context.newPage();
 
