@@ -26,7 +26,7 @@ const config: Config = {
   urlPattern: "/forum-2-{page}.html",
   startPage: 1,
   endPage: 821,
-  baseDelay: 5000,
+  baseDelay: 1000,
 };
 
 // 带 emoji 的日志函数
@@ -157,6 +157,13 @@ const closeDatabase = async () => {
 
 const scrape = async () => {
   let browser;
+  // 在scrape函数中添加总计数器
+  let totalStats = {
+    totalExtracted: 0,
+    totalDuplicates: 0,
+    totalInserted: 0,
+  };
+
   try {
     await initDatabase();
 
@@ -177,7 +184,7 @@ const scrape = async () => {
       pageNumber <= config.endPage;
       pageNumber++
     ) {
-      await runSinglePageScrape(page, pageNumber);
+      await runSinglePageScrape(page, pageNumber, totalStats);
       if (pageNumber < config.endPage) {
         await new Promise((resolve) => setTimeout(resolve, config.baseDelay));
       }
@@ -185,6 +192,10 @@ const scrape = async () => {
 
     await browser.close();
     log("✅ 爬取任务完成", "success");
+    log(
+      `🎯 最终统计: 总提取${totalStats.totalExtracted}条 | 总重复${totalStats.totalDuplicates}条 | 总新增${totalStats.totalInserted}条`,
+      "result"
+    );
   } catch (error: any) {
     log(`❌ 爬取失败: ${error.message}`, "error");
     if (browser) await browser.close();
@@ -198,13 +209,21 @@ interface ThreadData {
   detail_link: string;
 }
 
-const runSinglePageScrape = async (page: Page, pageNumber: number) => {
+const runSinglePageScrape = async (
+  page: Page,
+  pageNumber: number,
+  totalStats?: {
+    totalExtracted: number;
+    totalDuplicates: number;
+    totalInserted: number;
+  }
+) => {
   const url = generateUrl(pageNumber);
   log(`📃 第 ${pageNumber} 页: ${url}`, "action");
 
   try {
     // 导航到页面
-    await page.goto(url, { waitUntil: "networkidle" });
+    await page.goto(url, { waitUntil: "domcontentloaded" });
 
     // 提取页面数据
     const results = await page.evaluate<ThreadData[]>(() => {
@@ -244,16 +263,31 @@ const runSinglePageScrape = async (page: Page, pageNumber: number) => {
       }
     }
 
+    // 在runSinglePageScrape中更新总计
+    if (totalStats) {
+      totalStats.totalExtracted += results.length;
+      totalStats.totalDuplicates += stats.linkDuplicates;
+      totalStats.totalInserted += stats.inserted;
+    }
+
     // 打印统计结果
     log(
       `📊 第${pageNumber}页统计: 提取${results.length}条 | 链接重复${stats.linkDuplicates}条 | 标题更新${stats.updated}条 | 新增${stats.inserted}条`,
       "result"
     );
 
+    // 定期打印总体进度
+    if (totalStats && pageNumber % 10 === 0) {
+      log(
+        `🎯 总进度: 已处理${pageNumber}页 | 总提取${totalStats.totalExtracted}条 | 总新增${totalStats.totalInserted}条`,
+        "info"
+      );
+    }
+
     // 保存截图
-    await page.screenshot({
-      path: `./screenshot/screenshot_${pageNumber}.png`,
-    });
+    // await page.screenshot({
+    //   path: `./screenshot/screenshot_${pageNumber}.png`,
+    // });
   } catch (error: any) {
     await page?.screenshot({ path: `./screenshot/error_${pageNumber}.png` });
     log(`❌ 第${pageNumber}页失败: ${error.message}`, "error");
