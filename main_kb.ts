@@ -1,6 +1,46 @@
 import { chromium, Page } from "playwright";
 import mysql from "mysql2/promise";
 
+// 命令行参数解析
+function parseCommandLineArgs() {
+  const args = process.argv.slice(2);
+  const config = {
+    startPage: 1,
+    endPage: 821,
+    manual: false,
+    schedule: false,
+  };
+
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    switch (arg) {
+      case "--start-page":
+        if (i + 1 < args.length) {
+          config.startPage = parseInt(args[i + 1]);
+          i++;
+        }
+        break;
+      case "--end-page":
+        if (i + 1 < args.length) {
+          config.endPage = parseInt(args[i + 1]);
+          i++;
+        }
+        break;
+      case "--manual":
+        config.manual = true;
+        break;
+      case "--schedule":
+        config.schedule = true;
+        break;
+    }
+  }
+
+  return config;
+}
+
+// 获取命令行配置
+const cmdConfig = parseCommandLineArgs();
+
 // 数据库配置
 const dbConfig = {
   host: "117.72.60.94",
@@ -24,8 +64,8 @@ interface Config {
 const config: Config = {
   baseUrl: "https://sykb169.org",
   urlPattern: "/forum-2-{page}.html",
-  startPage: 1,
-  endPage: 821,
+  startPage: cmdConfig.startPage,
+  endPage: cmdConfig.endPage,
   baseDelay: 1000,
 };
 
