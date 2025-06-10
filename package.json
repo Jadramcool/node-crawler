@@ -5,24 +5,12 @@
   "main": "index.js",
   "scripts": {
     "start": "ts-node index.ts",
-    "start:main": "ts-node index.ts --scraper main",
-    "start:kb": "ts-node index.ts --scraper kb",
-    "start:main:manual": "ts-node index.ts --scraper main --manual",
-    "start:main:schedule": "ts-node index.ts --scraper main --schedule",
-    "start:main:schedule:noProxy": "ts-node index.ts --scraper main --schedule --no-proxy",
-    "start:kb:manual": "ts-node index.ts --scraper kb --manual",
-    "start:kb:schedule": "ts-node index.ts --scraper kb --schedule",
-    "export:excel": "ts-node export_db_to_excel.ts --",
+    "dev:main": "ts-node index.ts --scraper main --",
+    "dev:kb": "ts-node index.ts --scraper kb --",
+    "export": "ts-node export_db_to_excel.ts",
     "dev": "nodemon index.ts",
     "help": "ts-node index.ts --help",
-    "test": "echo \"Error: no test specified\" && exit 1",
-    "legacy:start": "ts-node main.ts --",
-    "legacy:start:manual": "ts-node main.ts --manual --",
-    "legacy:start:schedule": "ts-node main.ts --schedule --",
-    "legacy:start:schedule:noProxy": "ts-node main.ts --schedule -- --no-proxy",
-    "legacy:start:kb": "ts-node main_kb.ts",
-    "legacy:start:kb:manual": "ts-node main_kb.ts --manual",
-    "legacy:start:kb:schedule": "ts-node main_kb.ts --schedule"
+    "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [
     "web-scraping",
